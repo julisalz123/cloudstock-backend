@@ -54,6 +54,13 @@ app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date() }));
 // INICIO
 // ============================================================
 const PORT = process.env.PORT || 3001;
+// Auto-migración al arrancar
+const { execSync } = require('child_process');
+try {
+  execSync('node src/models/migrate.js', { stdio: 'inherit' });
+} catch (e) {
+  console.log('Migración ya aplicada o error menor:', e.message);
+}
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 SyncStock backend corriendo en puerto ${PORT}`);
   console.log(`📦 Entorno: ${process.env.NODE_ENV || 'development'}`);
