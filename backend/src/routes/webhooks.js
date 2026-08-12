@@ -103,18 +103,29 @@ router.post('/mercadolibre', async (req, res) => {
     const userId = tokenRows[0].user_id;
 
     // Trae los detalles de la orden
-    const order = await mlService.getOrder(userId, resourceId);
-    if (!order || order.status !== 'paid') return;
+const order = await mlService.getOrder(userId, resourceId);
+if (!order || order.status !== 'paid') return;
 
-    const items = (order.order_items || []).map(i => ({
-      item_id: i.item?.id,
-      variation_id: i.item?.variation_id || null,
-      quantity: i.quantity,
-    })).filter(i => i.item_id);
+// Determina si es Full (fulfillment)
+let isFulfillment = false;
+try {
+  if (order.shipping?.id) {
+    const shipment = await mlService.getShipment(userId, order.shipping.id);
+    isFulfillment = shipment?.logistic_type === 'fulfillment';
+  }
+} catch (err) {
+  console.error('No se pudo determinar logistic_type:', err.message);
+}
 
-    if (items.length === 0) return;
+const items = (order.order_items || []).map(i => ({
+  item_id: i.item?.id,
+  variation_id: i.item?.variation_id || null,
+  quantity: i.quantity,
+})).filter(i => i.item_id);
 
-    await syncEngine.handleMLSale(userId, String(order.id), items);
+if (items.length === 0) return;
+
+await syncEngine.handleMLSale(userId, String(order.id), items, isFulfillment);
 
     // Guarda la orden
     await pool.query(
