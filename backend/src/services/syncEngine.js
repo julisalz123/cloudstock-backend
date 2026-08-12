@@ -139,7 +139,7 @@ async function handleTNSale(userId, orderId, orderItems) {
 
 // Procesa una venta en MERCADO LIBRE
 // → busca mapeo → resta en TN → MELI ya lo descontó solo → actualiza nuestro registro
-async function handleMLSale(userId, orderId, mlItems) {
+async function handleMLSale(userId, orderId, mlItems, isFulfillment = false) {
   const { rows: storeRows } = await pool.query(
     `SELECT * FROM stores WHERE user_id = $1 AND platform = 'tiendanube'`,
     [userId]
@@ -151,41 +151,45 @@ async function handleMLSale(userId, orderId, mlItems) {
     try {
       const { rows } = await pool.query(
         `SELECT * FROM product_mappings 
-         WHERE user_id = $1 
-         AND ml_item_id = $2 
-         AND is_active = true`,
+         WHERE user_id = $1 AND ml_item_id = $2 AND is_active = true`,
         [userId, String(item.item_id)]
       );
       if (!rows[0]) continue;
 
       const mapping = rows[0];
+
+      if (isFulfillment) {
+        // Venta de FULL: el stock salió del depósito de MELI, no de TN. No tocar.
+        await logSync({
+          userId,
+          mappingId: mapping.id,
+          eventType: 'sale_ml_full_skipped',
+          sourcePlatform: 'mercadolibre',
+          previousStock: mapping.current_stock,
+          newStock: mapping.current_stock,
+          quantityChanged: 0,
+          orderId,
+          details: { note: 'Venta Full, no se descuenta TN', quantity: item.quantity },
+        });
+        continue;
+      }
+
       const previousStock = mapping.current_stock;
       const newStock = Math.max(0, previousStock - item.quantity);
 
-      // Resta en TN (el stock real)
       await tnService.updateVariantStock(
-        tnStore.store_id,
-        tnStore.access_token,
-        mapping.tn_product_id,
-        mapping.tn_variant_id,
-        newStock
+        tnStore.store_id, tnStore.access_token,
+        mapping.tn_product_id, mapping.tn_variant_id, newStock
       );
 
-      // Actualiza nuestro registro (MELI ya descontó por su cuenta)
       await pool.query(
         `UPDATE product_mappings SET current_stock = $1, last_synced_at = NOW() WHERE id = $2`,
         [newStock, mapping.id]
       );
 
       await logSync({
-        userId,
-        mappingId: mapping.id,
-        eventType: 'sale_ml',
-        sourcePlatform: 'mercadolibre',
-        previousStock,
-        newStock,
-        quantityChanged: -item.quantity,
-        orderId,
+        userId, mappingId: mapping.id, eventType: 'sale_ml', sourcePlatform: 'mercadolibre',
+        previousStock, newStock, quantityChanged: -item.quantity, orderId,
       });
 
     } catch (err) {
@@ -193,7 +197,6 @@ async function handleMLSale(userId, orderId, mlItems) {
     }
   }
 }
-
 // Procesa un cambio de stock en TN (restock manual o cambio de producto)
 // → actualiza MELI con el nuevo valor de TN
 async function handleTNStockUpdate(userId, productId, variantId, newStock) {
